@@ -1,0 +1,21 @@
+# Compiled binary
+grpc-auth-proxy
+
+# Configuration with sensitive JWT tokens (but keep the example)
+config.yaml
+!config.example.yaml
+
+# Go build artifacts
+go.sum
+
+# Logs
+*.log
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store

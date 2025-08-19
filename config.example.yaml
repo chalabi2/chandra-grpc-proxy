@@ -1,0 +1,21 @@
+# gRPC Proxy Configuration
+# Copy this file to config.yaml and replace the JWT tokens with your actual tokens
+
+endpoints:
+  - name: "cosmos-hub"
+    local_port: 9090
+    remote_address: "cosmos-grpc-api.chandrastation.com:443"
+    use_tls: true
+    jwt_token: "your_cosmos_jwt_token_here"
+
+  - name: "osmosis"
+    local_port: 9091
+    remote_address: "osmosis-grpc-api.chandrastation.com:443"
+    use_tls: true
+    jwt_token: "your_osmosis_jwt_token_here"
+# Add more endpoints as needed:
+# - name: "juno"
+#   local_port: 9092
+#   remote_address: "juno-grpc-api.chandrastation.com:443"
+#   use_tls: true
+#   jwt_token: "your_juno_jwt_token_here"
