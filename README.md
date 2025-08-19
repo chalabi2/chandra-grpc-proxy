@@ -53,8 +53,6 @@ endpoints:
     jwt_token: "your_jwt_token_here"
 ```
 
-**Note**: `config.yaml` is gitignored to prevent accidentally committing JWT tokens.
-
 ## How It Works
 
 - Transparent proxy using gRPC's `UnknownServiceHandler`
