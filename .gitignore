@@ -19,3 +19,5 @@ go.sum
 
 # macOS
 .DS_Store
+
+RELEASE_NOTES.md

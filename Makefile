@@ -5,6 +5,7 @@ BINARY_NAME=grpc-auth-proxy
 CONFIG_FILE=config.yaml
 EXAMPLE_CONFIG=config.example.yaml
 TEST_CONFIG=config.test.yaml
+VERSION=v0.0.2
 
 # Go parameters
 GOCMD=go
@@ -14,7 +15,7 @@ GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
 GOMOD=$(GOCMD) mod
 
-.PHONY: all build clean test deps config run help test-auth test-reflection test-endpoints test-integration
+.PHONY: all build clean test deps config run help test-auth test-reflection test-endpoints test-integration release release-linux release-darwin release-windows
 
 # Default target
 all: deps build test
@@ -24,11 +25,31 @@ build:
 	@echo "Building $(BINARY_NAME)..."
 	$(GOBUILD) -o $(BINARY_NAME) -v main.go
 
+# Build release binaries for multiple platforms
+release: release-linux release-darwin release-windows
+	@echo "All release binaries built successfully"
+
+# Build Linux AMD64 binary
+release-linux:
+	@echo "Building Linux AMD64 binary..."
+	GOOS=linux GOARCH=amd64 $(GOBUILD) -o $(BINARY_NAME)-linux-amd64 -v main.go
+
+# Build macOS binary
+release-darwin:
+	@echo "Building macOS binary..."
+	GOOS=darwin GOARCH=amd64 $(GOBUILD) -o $(BINARY_NAME)-darwin-amd64 -v main.go
+
+# Build Windows binary
+release-windows:
+	@echo "Building Windows binary..."
+	GOOS=windows GOARCH=amd64 $(GOBUILD) -o $(BINARY_NAME)-windows-amd64.exe -v main.go
+
 # Clean build artifacts
 clean:
 	@echo "Cleaning..."
 	$(GOCLEAN)
 	rm -f $(BINARY_NAME)
+	rm -f $(BINARY_NAME)-*
 	rm -f $(TEST_CONFIG)
 
 # Download dependencies
@@ -138,6 +159,10 @@ help:
 	@echo "Targets:"
 	@echo "  all              - Build and test everything"
 	@echo "  build            - Build the binary"
+	@echo "  release          - Build release binaries for all platforms"
+	@echo "  release-linux    - Build Linux AMD64 binary"
+	@echo "  release-darwin   - Build macOS binary"
+	@echo "  release-windows  - Build Windows binary"
 	@echo "  clean            - Clean build artifacts"
 	@echo "  deps             - Download Go dependencies"
 	@echo "  config           - Check/create config file"

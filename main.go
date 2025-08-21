@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/tls"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -201,14 +202,18 @@ func loadConfig(filename string) (*ProxyConfig, error) {
 }
 
 func main() {
+	// Parse command line flags
+	configPath := flag.String("config", "config.yaml", "Path to the configuration file")
+	flag.Parse()
+
 	// Load configuration from YAML file
-	config, err := loadConfig("config.yaml")
+	config, err := loadConfig(*configPath)
 	if err != nil {
 		log.Fatalf("Configuration error: %v", err)
 	}
 
 	if len(config.Endpoints) == 0 {
-		log.Fatal("No endpoints configured in config.yaml")
+		log.Fatalf("No endpoints configured in %s", *configPath)
 	}
 
 	log.Printf("Loaded configuration with %d endpoints", len(config.Endpoints))
@@ -217,7 +222,7 @@ func main() {
 	for _, endpoint := range config.Endpoints {
 		// Validate endpoint configuration
 		if endpoint.JWTToken == "" || endpoint.JWTToken == "your_cosmos_jwt_token_here" || endpoint.JWTToken == "your_osmosis_jwt_token_here" {
-			log.Fatalf("Please set a valid JWT token for endpoint '%s' in config.yaml", endpoint.Name)
+			log.Fatalf("Please set a valid JWT token for endpoint '%s' in %s", endpoint.Name, *configPath)
 		}
 
 		wg.Add(1)

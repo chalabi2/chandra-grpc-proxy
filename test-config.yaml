@@ -1,0 +1,7 @@
+# Test configuration file
+endpoints:
+  - name: "test-cosmos"
+    local_port: 9090
+    remote_address: "cosmos-grpc-api.chandrastation.com:443"
+    use_tls: true
+    jwt_token: "test_valid_jwt_token_123"
