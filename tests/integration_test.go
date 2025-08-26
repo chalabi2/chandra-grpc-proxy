@@ -32,25 +32,33 @@ func TestIntegration(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		proxyCmd := exec.CommandContext(ctx, "../grpc-auth-proxy")
+		// Build the proxy first
+		buildCmd := exec.Command("go", "build", "-o", "grpc-proxy", ".")
+		buildCmd.Dir = ".."
+		err := buildCmd.Run()
+		require.NoError(t, err, "Should be able to build proxy")
+
+		proxyCmd := exec.CommandContext(ctx, "../grpc-proxy", "--config", "../config.yaml")
 		proxyCmd.Dir = ".."
 
 		// Capture stdout/stderr for debugging
 		proxyCmd.Stdout = os.Stdout
 		proxyCmd.Stderr = os.Stderr
 
-		err := proxyCmd.Start()
+		err = proxyCmd.Start()
 		require.NoError(t, err, "Should be able to start proxy")
 
 		// Wait for proxy to start up
 		time.Sleep(2 * time.Second)
 
-		// Ensure we clean up the proxy process
+		// Ensure we clean up the proxy process and binary
 		defer func() {
 			if proxyCmd.Process != nil {
 				proxyCmd.Process.Kill()
 				proxyCmd.Wait()
 			}
+			// Clean up the built binary
+			os.Remove("../grpc-proxy")
 		}()
 
 		// Test both endpoints

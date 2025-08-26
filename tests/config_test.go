@@ -1,37 +1,38 @@
 package tests
 
 import (
-	"io/ioutil"
 	"os"
 	"testing"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v2"
 )
 
-// Config structs - duplicated from main.go for testing
+// Config structs - imported from main package structure
 type Config struct {
-	Name          string `yaml:"name"`
-	LocalPort     int    `yaml:"local_port"`
-	RemoteAddress string `yaml:"remote_address"`
-	UseTLS        bool   `yaml:"use_tls"`
-	JWTToken      string `yaml:"jwt_token"`
+	Name          string `mapstructure:"name"`
+	LocalPort     int    `mapstructure:"local_port"`
+	RemoteAddress string `mapstructure:"remote_address"`
+	UseTLS        bool   `mapstructure:"use_tls"`
+	JWTToken      string `mapstructure:"jwt_token"`
 }
 
 type ProxyConfig struct {
-	Endpoints []Config `yaml:"endpoints"`
+	Endpoints []Config `mapstructure:"endpoints"`
 }
 
-func loadConfig(filename string) (*ProxyConfig, error) {
-	data, err := ioutil.ReadFile(filename)
-	if err != nil {
+func loadConfigWithViper(filename string) (*ProxyConfig, error) {
+	v := viper.New()
+	v.SetConfigFile(filename)
+	v.SetConfigType("yaml")
+
+	if err := v.ReadInConfig(); err != nil {
 		return nil, err
 	}
 
 	var config ProxyConfig
-	err = yaml.Unmarshal(data, &config)
-	if err != nil {
+	if err := v.Unmarshal(&config); err != nil {
 		return nil, err
 	}
 
@@ -54,7 +55,7 @@ endpoints:
     jwt_token: "test_token_456"
 `
 
-	tmpfile, err := ioutil.TempFile("", "config_test_*.yaml")
+	tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
 	require.NoError(t, err)
 	defer os.Remove(tmpfile.Name())
 
@@ -63,7 +64,7 @@ endpoints:
 	tmpfile.Close()
 
 	// Test loading the config
-	config, err := loadConfig(tmpfile.Name())
+	config, err := loadConfigWithViper(tmpfile.Name())
 	require.NoError(t, err)
 	require.NotNil(t, config)
 
@@ -136,7 +137,7 @@ endpoints: []
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tmpfile, err := ioutil.TempFile("", "config_test_*.yaml")
+			tmpfile, err := os.CreateTemp("", "config_test_*.yaml")
 			require.NoError(t, err)
 			defer os.Remove(tmpfile.Name())
 
@@ -144,7 +145,7 @@ endpoints: []
 			require.NoError(t, err)
 			tmpfile.Close()
 
-			config, err := loadConfig(tmpfile.Name())
+			config, err := loadConfigWithViper(tmpfile.Name())
 
 			if tt.hasError {
 				assert.Error(t, err)
@@ -157,7 +158,7 @@ endpoints: []
 }
 
 func TestConfigFileNotFound(t *testing.T) {
-	config, err := loadConfig("nonexistent_config.yaml")
+	config, err := loadConfigWithViper("nonexistent_config.yaml")
 	assert.Error(t, err)
 	assert.Nil(t, config)
 }

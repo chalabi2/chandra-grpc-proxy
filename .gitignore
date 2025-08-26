@@ -1,5 +1,6 @@
 # Compiled binary
 grpc-auth-proxy
+grpc-proxy
 
 # Configuration with sensitive JWT tokens (but keep the example)
 config.yaml

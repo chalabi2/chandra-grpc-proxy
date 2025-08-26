@@ -1,55 +1,74 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
-	"flag"
 	"fmt"
-	"io"
-	"io/ioutil"
 	"log"
 	"net"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
+	"time"
 
+	"github.com/mwitkow/grpc-proxy/proxy"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
-	"gopkg.in/yaml.v2"
 )
 
+// Config represents the configuration for a single endpoint
 type Config struct {
-	Name          string `yaml:"name"`
-	LocalPort     int    `yaml:"local_port"`
-	RemoteAddress string `yaml:"remote_address"`
-	UseTLS        bool   `yaml:"use_tls"`
-	JWTToken      string `yaml:"jwt_token"`
+	Name          string `mapstructure:"name"`
+	LocalPort     int    `mapstructure:"local_port"`
+	RemoteAddress string `mapstructure:"remote_address"`
+	UseTLS        bool   `mapstructure:"use_tls"`
+	JWTToken      string `mapstructure:"jwt_token"`
 }
 
+// ProxyConfig represents the entire proxy configuration
 type ProxyConfig struct {
-	Endpoints []Config `yaml:"endpoints"`
+	Endpoints []Config `mapstructure:"endpoints"`
 }
 
+// ProxyServer represents a single proxy server instance
 type ProxyServer struct {
 	config   Config
 	server   *grpc.Server
 	upstream *grpc.ClientConn
+	listener net.Listener
 }
 
+// NewProxyServer creates a new proxy server with the specified configuration
 func NewProxyServer(config Config) (*ProxyServer, error) {
-	// Create upstream connection
-	var conn *grpc.ClientConn
-	var err error
+	// Create upstream connection with keep alive parameters
+	var opts []grpc.DialOption
 
+	// Add keep alive parameters as recommended
+	keepAliveParams := keepalive.ClientParameters{
+		Time:                10 * time.Second, // send pings every 10 seconds if there is no activity
+		Timeout:             time.Second,      // wait 1 second for ping ack before considering the connection dead
+		PermitWithoutStream: true,             // send pings even without active streams
+	}
+	opts = append(opts, grpc.WithKeepaliveParams(keepAliveParams))
+
+	// Configure TLS or insecure credentials
 	if config.UseTLS {
-		conn, err = grpc.Dial(config.RemoteAddress,
-			grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{})))
+		tlsConfig := &tls.Config{
+			MinVersion:         tls.VersionTLS12,
+			ClientSessionCache: tls.NewLRUClientSessionCache(1024),
+		}
+		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
 	} else {
-		conn, err = grpc.Dial(config.RemoteAddress,
-			grpc.WithTransportCredentials(insecure.NewCredentials()))
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
+	conn, err := grpc.NewClient(config.RemoteAddress, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to upstream: %v", err)
 	}
@@ -60,8 +79,25 @@ func NewProxyServer(config Config) (*ProxyServer, error) {
 	}, nil
 }
 
+// director function that handles JWT authentication forwarding
+func (p *ProxyServer) director(ctx context.Context, fullMethodName string) (context.Context, grpc.ClientConnInterface, error) {
+	// Get incoming metadata
+	inMD, _ := metadata.FromIncomingContext(ctx)
+
+	// Copy incoming metadata and add/override authorization header with JWT token
+	outMD := inMD.Copy()
+	outMD.Set("authorization", fmt.Sprintf("Bearer %s", p.config.JWTToken))
+
+	// Create outgoing context with modified metadata
+	ctx = metadata.NewOutgoingContext(ctx, outMD)
+
+	return ctx, p.upstream, nil
+}
+
+// Start starts the proxy server
 func (p *ProxyServer) Start() error {
-	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", p.config.LocalPort))
+	var err error
+	p.listener, err = net.Listen("tcp", fmt.Sprintf(":%d", p.config.LocalPort))
 	if err != nil {
 		return fmt.Errorf("failed to listen on port %d: %v", p.config.LocalPort, err)
 	}
@@ -69,176 +105,157 @@ func (p *ProxyServer) Start() error {
 	log.Printf("Starting gRPC proxy for %s on port %d -> %s",
 		p.config.Name, p.config.LocalPort, p.config.RemoteAddress)
 
-	// Create gRPC server with transparent proxy
+	// Create gRPC server with the mwitkow proxy handler
 	p.server = grpc.NewServer(
-		grpc.UnknownServiceHandler(p.transparentHandler),
+		grpc.UnknownServiceHandler(proxy.TransparentHandler(p.director)),
 	)
 
-	return p.server.Serve(lis)
+	return p.server.Serve(p.listener)
 }
 
-func (p *ProxyServer) transparentHandler(srv interface{}, serverStream grpc.ServerStream) error {
-	// Get the method name
-	fullMethodName, ok := grpc.MethodFromServerStream(serverStream)
-	if !ok {
-		return status.Errorf(codes.Internal, "lowlevel gRPC error: cannot get method name")
+// Stop gracefully stops the proxy server
+func (p *ProxyServer) Stop() {
+	if p.server != nil {
+		log.Printf("Stopping proxy server for %s", p.config.Name)
+		p.server.GracefulStop()
 	}
+	if p.upstream != nil {
+		p.upstream.Close()
+	}
+	if p.listener != nil {
+		p.listener.Close()
+	}
+}
 
-	// Get incoming metadata and add auth header
-	md, _ := metadata.FromIncomingContext(serverStream.Context())
-	outCtx := metadata.NewOutgoingContext(serverStream.Context(), metadata.Join(md, metadata.Pairs(
-		"authorization", fmt.Sprintf("Bearer %s", p.config.JWTToken),
-	)))
+var (
+	cfgFile     string
+	proxyConfig *ProxyConfig
+)
 
-	// Create client stream
-	clientStream, err := p.upstream.NewStream(outCtx, &grpc.StreamDesc{
-		StreamName:    fullMethodName,
-		ClientStreams: true,
-		ServerStreams: true,
-	}, fullMethodName)
+// rootCmd represents the base command when called without any subcommands
+var rootCmd = &cobra.Command{
+	Use:   "grpc-proxy",
+	Short: "A gRPC proxy server with JWT authentication forwarding",
+	Long: `A gRPC proxy server that forwards requests to upstream gRPC services
+while automatically injecting JWT authentication tokens.
 
+The proxy supports multiple endpoints, each with their own configuration
+including different JWT tokens, TLS settings, and port mappings.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		startProxy()
+	},
+}
+
+// Execute adds all child commands to the root command and sets flags appropriately.
+func Execute() {
+	err := rootCmd.Execute()
 	if err != nil {
-		return err
+		os.Exit(1)
+	}
+}
+
+func init() {
+	cobra.OnInitialize(initConfig)
+
+	// Define flags
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is ./config.yaml)")
+
+	// Bind flags to viper
+	viper.BindPFlag("config", rootCmd.PersistentFlags().Lookup("config"))
+}
+
+// initConfig reads in config file and ENV variables if set.
+func initConfig() {
+	if cfgFile != "" {
+		// Use config file from the flag.
+		viper.SetConfigFile(cfgFile)
+	} else {
+		// Search for config in current directory with name "config" (without extension).
+		viper.AddConfigPath(".")
+		viper.SetConfigType("yaml")
+		viper.SetConfigName("config")
 	}
 
-	// Bi-directional streaming proxy
-	s2cErrChan := p.forwardServerToClient(serverStream, clientStream)
-	c2sErrChan := p.forwardClientToServer(clientStream, serverStream)
+	viper.AutomaticEnv() // read in environment variables that match
 
-	// Wait for one of the streams to close
-	for i := 0; i < 2; i++ {
-		select {
-		case s2cErr := <-s2cErrChan:
-			if s2cErr == io.EOF {
-				// Server ended normally, close client stream
-				clientStream.CloseSend()
-				break
-			} else if s2cErr != nil {
-				return s2cErr
-			}
-		case c2sErr := <-c2sErrChan:
-			// Client stream ended
-			if c2sErr != io.EOF && c2sErr != nil {
-				return c2sErr
-			}
-		}
-	}
-	return nil
-}
-
-func (p *ProxyServer) forwardClientToServer(src grpc.ClientStream, dst grpc.ServerStream) chan error {
-	ret := make(chan error, 1)
-	go func() {
-		f := &frame{}
-		for i := 0; ; i++ {
-			if err := src.RecvMsg(f); err != nil {
-				ret <- err
-				break
-			}
-			if err := dst.SendMsg(f); err != nil {
-				ret <- err
-				break
-			}
-		}
-	}()
-	return ret
-}
-
-func (p *ProxyServer) forwardServerToClient(src grpc.ServerStream, dst grpc.ClientStream) chan error {
-	ret := make(chan error, 1)
-	go func() {
-		f := &frame{}
-		for i := 0; ; i++ {
-			if err := src.RecvMsg(f); err != nil {
-				ret <- err
-				break
-			}
-			if err := dst.SendMsg(f); err != nil {
-				ret <- err
-				break
-			}
-		}
-	}()
-	return ret
-}
-
-// frame is used to hold arbitrary gRPC message data
-type frame struct {
-	payload []byte
-}
-
-func (f *frame) Reset() {
-	f.payload = f.payload[:0]
-}
-
-func (f *frame) String() string {
-	return fmt.Sprintf("frame{len=%d}", len(f.payload))
-}
-
-func (f *frame) ProtoMessage() {}
-
-func (f *frame) Marshal() ([]byte, error) {
-	return f.payload, nil
-}
-
-func (f *frame) Unmarshal(data []byte) error {
-	f.payload = append(f.payload[:0], data...)
-	return nil
-}
-
-func loadConfig(filename string) (*ProxyConfig, error) {
-	data, err := ioutil.ReadFile(filename)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %v", err)
+	// If a config file is found, read it in.
+	if err := viper.ReadInConfig(); err == nil {
+		log.Printf("Using config file: %s", viper.ConfigFileUsed())
+	} else {
+		log.Fatalf("Error reading config file: %v", err)
 	}
 
-	var config ProxyConfig
-	err = yaml.Unmarshal(data, &config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse config file: %v", err)
+	// Unmarshal the configuration
+	if err := viper.Unmarshal(&proxyConfig); err != nil {
+		log.Fatalf("Error unmarshaling config: %v", err)
 	}
-
-	return &config, nil
 }
 
-func main() {
-	// Parse command line flags
-	configPath := flag.String("config", "config.yaml", "Path to the configuration file")
-	flag.Parse()
-
-	// Load configuration from YAML file
-	config, err := loadConfig(*configPath)
-	if err != nil {
-		log.Fatalf("Configuration error: %v", err)
+// startProxy starts all configured proxy servers
+func startProxy() {
+	if len(proxyConfig.Endpoints) == 0 {
+		log.Fatalf("No endpoints configured")
 	}
 
-	if len(config.Endpoints) == 0 {
-		log.Fatalf("No endpoints configured in %s", *configPath)
-	}
-
-	log.Printf("Loaded configuration with %d endpoints", len(config.Endpoints))
+	log.Printf("Loaded configuration with %d endpoints", len(proxyConfig.Endpoints))
 
 	var wg sync.WaitGroup
-	for _, endpoint := range config.Endpoints {
+	var servers []*ProxyServer
+
+	// Create and start all proxy servers
+	for _, endpoint := range proxyConfig.Endpoints {
 		// Validate endpoint configuration
-		if endpoint.JWTToken == "" || endpoint.JWTToken == "your_cosmos_jwt_token_here" || endpoint.JWTToken == "your_osmosis_jwt_token_here" {
-			log.Fatalf("Please set a valid JWT token for endpoint '%s' in %s", endpoint.Name, *configPath)
+		if endpoint.JWTToken == "" ||
+			endpoint.JWTToken == "your_cosmos_jwt_token_here" ||
+			endpoint.JWTToken == "your_osmosis_jwt_token_here" {
+			log.Fatalf("Please set a valid JWT token for endpoint '%s'", endpoint.Name)
 		}
 
+		proxy, err := NewProxyServer(endpoint)
+		if err != nil {
+			log.Fatalf("Failed to create proxy server %s: %v", endpoint.Name, err)
+		}
+		servers = append(servers, proxy)
+
 		wg.Add(1)
-		go func(cfg Config) {
+		go func(p *ProxyServer) {
 			defer wg.Done()
-			proxy, err := NewProxyServer(cfg)
-			if err != nil {
-				log.Printf("Failed to create proxy server %s: %v", cfg.Name, err)
-				return
+			if err := p.Start(); err != nil {
+				log.Printf("Proxy server %s error: %v", p.config.Name, err)
 			}
-			if err := proxy.Start(); err != nil {
-				log.Printf("Proxy server %s error: %v", cfg.Name, err)
-			}
-		}(endpoint)
+		}(proxy)
 	}
 
 	log.Println("All proxy servers started")
-	wg.Wait()
+
+	// Set up signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Wait for shutdown signal
+	<-sigChan
+	log.Println("Received shutdown signal, stopping all servers...")
+
+	// Stop all servers gracefully
+	for _, server := range servers {
+		go server.Stop()
+	}
+
+	// Give servers time to shutdown gracefully
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Println("All servers stopped gracefully")
+	case <-time.After(30 * time.Second):
+		log.Println("Timeout waiting for servers to stop, forcing exit")
+	}
+}
+
+func main() {
+	Execute()
 }
