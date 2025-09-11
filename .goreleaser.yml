@@ -3,7 +3,7 @@ project_name: grpc-auth-proxy
 
 release:
   github:
-    owner: chalabi
+    owner: chalabi2
     name: chandra-grpc-proxy
 
 builds:
