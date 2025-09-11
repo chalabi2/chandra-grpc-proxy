@@ -4,7 +4,7 @@ project_name: grpc-auth-proxy
 release:
   github:
     owner: chalabi
-    name: grpc-proxy
+    name: chandra-grpc-proxy
 
 builds:
   - id: grpc-auth-proxy
