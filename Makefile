@@ -5,7 +5,7 @@ BINARY_NAME=grpc-auth-proxy
 CONFIG_FILE=config.yaml
 EXAMPLE_CONFIG=config.example.yaml
 TEST_CONFIG=config.test.yaml
-VERSION=v0.0.2
+VERSION=v1.0.1
 
 # Go parameters
 GOCMD=go

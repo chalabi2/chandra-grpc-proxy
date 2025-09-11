@@ -1,13 +1,22 @@
-# Compiled binary
+# Compiled binaries
 grpc-auth-proxy
 grpc-proxy
+grpc-auth-proxy-*
+*.exe
 
 # Configuration with sensitive JWT tokens (but keep the example)
 config.yaml
+config.test.yaml
 !config.example.yaml
 
 # Go build artifacts
 go.sum
+
+# GoReleaser artifacts
+dist/
+*.tar.gz
+*.zip
+*_checksums.txt
 
 # Logs
 *.log
@@ -21,4 +30,5 @@ go.sum
 # macOS
 .DS_Store
 
+# Release notes (if generated)
 RELEASE_NOTES.md
