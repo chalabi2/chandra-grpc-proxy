@@ -1,0 +1,32 @@
+run:
+  timeout: 5m
+  tests: true
+
+linters-settings:
+  errcheck:
+    check-type-assertions: false
+    check-blank: false
+
+  staticcheck:
+    checks: ["all", "-SA1019"] # Disable only deprecation warnings
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+
+issues:
+  exclude-rules:
+    # Allow some unchecked errors in tests for cleanup operations
+    - path: tests/
+      text: "Error return value.*is not checked"
+      linters:
+        - errcheck
+
+  max-issues-per-linter: 0
+  max-same-issues: 0
